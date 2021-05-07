@@ -30,6 +30,8 @@ class Election extends Model
 
     public function countResult()
     {
+    	ray()->clearScreen();
+
     	$vacancies = $this->vacancies;
 
     	$ballots = $this->ballots()->with('preferences')->get()->map(function ($ballot) {
@@ -45,21 +47,21 @@ class Election extends Model
 
     	$quota = (count($ballots) / ($vacancies + 1)) + 1;
 
-    	$candidates = $this->candidates->mapWithKeys(function ($candidate) {
-    		return [strval($candidate->id) => [
+    	$candidates = [];
+
+    	$this->candidates->each(function ($candidate) use (&$candidates) {
+    		$candidates[strval($candidate->id)] = [
     			'id' => $candidate->id,
     			'name' => $candidate->name,
     			'elected' => false,
-    			'elected_at_transfer' => false,
-    			'surplus_transferred' => false,
     			'excluded' => false,
     			'parcels' => [
     				['transfer_value' => 1, 'ballots' => []]
     			],
     			'votes' => 0,
     			//'original_model' => $candidate,
-    		]];
-    	})->all();
+    		];
+    	});
 
     	// Count first preferences
     	foreach ($ballots as $ballot) {
@@ -69,70 +71,147 @@ class Election extends Model
 
     	$elected = [];
 
-    	for ($i = 0; $i < 4; $i++) {
-    		ray($i);
-
+    	//for ($i = 0; $i < 1; $i++) {
     		uasort($candidates, function ($a, $b) {
 	    		return ($a['votes'] > $b['votes']) ? -1 : 1;
 	    	});
 
+	    	$surplus_transfer_queue = [];
+
 	    	// Find elected candidates
-	    	foreach ($candidates as &$candidate) {
-	    		if (($candidate['elected'] === false || $candidate['elected_at_transfer'] === true)  && $candidate['votes'] >= $quota) {
+	    	foreach ($candidates as $key => $candidate) {
+	    		if ($candidate['votes'] >= $quota && $candidate['elected'] === false) {
 	    			$candidate['elected'] = true;
-	    			$candidate['surplus_transferred'] = $candidate['votes'] == $quota;
+	    			
+	    			if ($candidate['votes'] > $quota) $surplus_transfer_queue[] = &$candidates[$key];
 
 	    			ray($candidate['name'].' elected');
 	    		}
 	    	}
 
-	    	foreach ($candidates as &$candidate) {
-	    		if ($candidate['elected'] === true && $candidate['surplus_transferred'] === false) {
-	    			$candidate['surplus_transferred'] = true;
+	    	while (count($surplus_transfer_queue)) {
+	    		$candidate = array_shift($surplus_transfer_queue);
 
-	    			$last_parcel = $candidate['parcels'][array_key_last($candidate['parcels'])];
-	    			$total_ballots = count($last_parcel['ballots']);
-	    			$surplus = $candidate['votes'] - $quota;
-	    			$transfer_value = $surplus / $total_ballots;
+    			$last_parcel = $candidate['parcels'][array_key_last($candidate['parcels'])];
+    			$total_ballots = count($last_parcel['ballots']);
+    			$surplus = $candidate['votes'] - $quota;
+    			$transfer_value = $surplus / $total_ballots;
 
-	    			$parcels = [];
+    			$parcels = [];
 
-	    			foreach ($last_parcel['ballots'] as $transfer_ballot) {
-	    				$transfer_candidate_id = $this->findNextPreference(count($candidate['parcels']), $transfer_ballot, $candidates);
+    			foreach ($last_parcel['ballots'] as $transfer_ballot) {
+    				$transfer_candidate_id = $this->findNextPreference(count($candidate['parcels']), $transfer_ballot, $candidates);
 
-	    				if ($transfer_candidate_id) {
-	    					$transfer_candidate = $candidates[$transfer_candidate_id];
+    				if ($transfer_candidate_id) {
+    					$transfer_candidate = $candidates[$transfer_candidate_id];
 
-	    					if (!array_key_exists($transfer_candidate['id'], $parcels)) {
-	    						$parcels[$transfer_candidate['id']] = [
-	    							'transfer_value' => $transfer_value,
-	    							'ballots' => []
-	    						]; 
-	    					}
-				    		
-				    		$parcels[$transfer_candidate['id']]['ballots'][] = $transfer_ballot;
-				    		$candidates[$transfer_candidate['id']]['votes'] += $transfer_value;
-	    				}
+    					if (!array_key_exists($transfer_candidate['id'], $parcels)) {
+    						$parcels[$transfer_candidate['id']] = [
+    							'transfer_value' => $transfer_value,
+    							'ballots' => []
+    						]; 
+    					}
+			    		
+			    		$parcels[$transfer_candidate['id']]['ballots'][] = $transfer_ballot;
+			    		$candidates[$transfer_candidate['id']]['votes'] += $transfer_value;
+    				}
+		    	}
+
+		    	// Sort parcels in highest vote order (descending order)
+		    	uasort($parcels, function ($a, $b) {
+		    		return (count($a['ballots']) > count($a['ballots'])) ? -1 : 1;
+		    	});
+
+		    	foreach ($parcels as $key => $parcel) {
+		    		$candidates[$key]['parcels'][] = $parcel;
+
+		    		// Check if transfer has elected a candidate
+		    		if ($candidates[$key]['votes'] >= $quota) {
+		    			$candidates[$key]['elected'] = true;
+
+		    			if ($candidates[$key]['votes'] > $quota) $surplus_transfer_queue[] = &$candidates[$key];
+
+		    			ray($candidates[$key]['name'].' elected');
+		    		}
+		    	}
+
+		    	$elected_candidates = array_filter($candidates, function ($candidate) {
+		    		return $candidate['elected'] === true;
+		    	});
+
+		    	while (
+		    		count($surplus_transfer_queue) === 0 &&
+		    		count($elected_candidates) < $vacancies
+		    	) {
+		    		uasort($candidates, function ($a, $b) {
+			    		return ($a['votes'] > $b['votes']) ? -1 : 1;
+			    	});
+
+			    	$continuing_candidates = array_filter($candidates, function ($candidate) {
+			    		return $candidate['elected'] === false && $candidate['excluded'] === false;
+			    	});
+
+			    	if (count($continuing_candidates) == 0) {
+			    		break;
 			    	}
 
-			    	foreach ($parcels as $key => $parcel) {
-			    		$candidates[$key]['parcels'][] = $parcel;
+			    	$candidates[array_key_last($continuing_candidates)]['excluded'] = true;
 
-			    		// Check if transfer has elected a candidate
-			    		if ($candidates[$key]['votes'] >= $quota) {
-			    			$candidates[$key]['elected_at_transfer'] = true;
-			    		}
+			    	$excluded_parcels = $candidates[array_key_last($continuing_candidates)]['parcels'];
+
+			    	// Sort parcels in highest transfer value order (descending order)
+			    	uasort($excluded_parcels, function ($a, $b) {
+			    		return ($a['transfer_value'] > $a['transfer_value']) ? -1 : 1;
+			    	});
+
+			    	foreach ($excluded_parcels as $key => $excluded_parcel) {
+
+			    		$transfer_parcels = [];
+
+			    		foreach ($excluded_parcel['ballots'] as $excluded_ballot) {
+		    				$transfer_candidate_id = $this->findNextPreference(count($candidates[array_key_last($continuing_candidates)]['parcels']), $excluded_ballot, $candidates);
+
+		    				if ($transfer_candidate_id) {
+		    					$transfer_candidate = $candidates[$transfer_candidate_id];
+
+		    					if (!array_key_exists($transfer_candidate['id'], $transfer_parcels)) {
+		    						$transfer_parcels[$transfer_candidate['id']] = [
+		    							'transfer_value' => $excluded_parcel['transfer_value'],
+		    							'ballots' => []
+		    						]; 
+		    					}
+					    		
+					    		$transfer_parcels[$transfer_candidate['id']]['ballots'][] = $excluded_ballot;
+					    		$candidates[$transfer_candidate['id']]['votes'] += $excluded_parcel['transfer_value'];
+		    				}
+				    	}
+
+				    	// Sort parcels in highest vote order (descending order)
+				    	uasort($transfer_parcels, function ($a, $b) {
+				    		return (count($a['ballots']) > count($a['ballots'])) ? -1 : 1;
+				    	});
+
+				    	ray($transfer_parcels);
+
+				    	foreach ($transfer_parcels as $key => $transfer_parcel) {
+				    		$candidates[$key]['parcels'][] = $transfer_parcel;
+
+				    		// Check if transfer has elected a candidate
+				    		if ($candidates[$key]['votes'] >= $quota) {
+				    			$candidates[$key]['elected'] = true;
+
+				    			if ($candidates[$key]['votes'] > $quota) $surplus_transfer_queue[] = &$candidates[$key];
+
+				    			ray($candidates[$key]['name'].' elected');
+				    		}
+				    	}
 			    	}
-	    		}
+		    	}
 	    	}
 
-
-
 	    	// TODO: Exclude candidates
-	    	// Don't transfer votes to already elected candidates
-	    	// Don't transfer votes to excluded candidates
 	    	// Handle cases where vote equality is equal when ordering	
-    	}
+    	//}
 
     	$final = [
     		'quota' => $quota,
@@ -144,11 +223,11 @@ class Election extends Model
     	return $final;
     }
 
-    protected function findNextPreference($min, &$ballot, &$candidates)
+    protected function findNextPreference($minimum_preference, &$ballot, &$candidates)
     {
-    	foreach ($ballot as $key => $candidate_id) {
-    		if ($key < $min) continue;
-    		if ($candidates[$candidate_id]['elected'] === true || $candidates[$candidate_id]['elected_at_transfer'] === true || $candidates[$candidate_id]['excluded'] === true) continue;
+    	foreach ($ballot as $preference => $candidate_id) {
+    		if ($preference < $minimum_preference) continue;
+    		if ($candidates[$candidate_id]['elected'] === true || $candidates[$candidate_id]['excluded'] === true) continue;
     		return $candidate_id;
     	}
 
