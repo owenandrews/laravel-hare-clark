@@ -31,6 +31,33 @@ class Election extends Model
     public function countResult()
     {
     	ray()->clearScreen();
+    	
+    	$ballots = $this->ballots()->with('preferences')->get()->map(function ($ballot) {
+    		// Sort prefences in ascending order
+    		$preferences = $ballot->preferences->sort(function($a, $b) {
+    			return ($a->pivot->preference < $b->pivot->preference) ? -1 : 1;
+    		})->values()->map(function ($preference) {
+    			return $preference->id;
+    		})->all();
+
+    		return $preferences;
+    	})->all();
+
+    	$candidates = $this->candidates->map(function ($candidate) {
+    		return [
+    			'id' => $candidate->id,
+    			'name' => $candidate->name,
+    		];
+    	})->values()->all();
+
+    	$hare_clark = new \App\HareClarkElection($this->vacancies, $candidates, $ballots);
+
+    	return $hare_clark->count();
+    }
+
+    public function oldCount()
+    {
+    	ray()->clearScreen();
 
     	$vacancies = $this->vacancies;
 
@@ -135,6 +162,10 @@ class Election extends Model
 		    		}
 		    	}
 
+		    	//
+		    	//
+		    	//
+
 		    	$elected_candidates = array_filter($candidates, function ($candidate) {
 		    		return $candidate['elected'] === true;
 		    	});
@@ -209,7 +240,7 @@ class Election extends Model
 		    	}
 	    	}
 
-	    	// TODO: Exclude candidates
+	    	// TODO
 	    	// Handle cases where vote equality is equal when ordering	
     	//}
 
