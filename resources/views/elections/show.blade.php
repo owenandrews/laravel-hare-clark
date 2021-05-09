@@ -7,7 +7,8 @@
 		@foreach ($result['candidates'] as $candidate)
 			<tr>
 				<td>
-					<a href="{{ route('elections.candidates.show', ['election' => $election->id, 'candidate' => $candidate['id']]) }}">{{ $candidate['name'] }}</a>
+					<a href="{{ route('elections.candidates.show', ['election' => $election->id, 'candidate' => $candidate['id']]) }}">{{ $candidate['name'] }}</a><br>
+					{{ $candidate['elected'] ? 'Elected' : 'Excluded' }}
 				</td>
 				<td>
 					Votes: {{ $candidate['votes'] }}<br>
