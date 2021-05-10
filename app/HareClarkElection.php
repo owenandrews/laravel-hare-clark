@@ -49,12 +49,32 @@ class HareClarkElection {
 	{
 		$this->countFirstPreferences();
 
-		while(count($this->electedCandidates()) < $this->vacancies) {
+		while (count($this->electedCandidates()) < $this->vacancies) {
+			ray($this->candidates, $this->quota);
+
 			$this->sortCandidates();
 
 			$this->processTransfers();
 
-			$this->excludeCandidates();
+			$this->sortCandidates();
+
+			$elected_candidates = $this->electedCandidates();
+			$pending_transfers = $this->candidatesWithPendingTransfers();
+
+			if (count($elected_candidates) < $this->vacancies && count($pending_transfers) == 0) {
+				$continuing_candidates = $this->continuingCandidates();
+
+				// If the number of continuing candidates equals the number of available vacancies, elect remaining candidates
+		    	if (count($continuing_candidates) == $this->vacancies - count($elected_candidates)) {
+		    		foreach ($continuing_candidates as $key => $candidate) {
+		    			$this->candidates[$key]['elected'] = true;
+		    		}
+
+		    		break;
+		    	}
+
+		    	$this->excludeCandidate();
+			}
 		}
 
 		return [
@@ -68,24 +88,26 @@ class HareClarkElection {
 		$parcels = [];
 
     	foreach ($this->ballots as $ballot) {
-    		if (!array_key_exists($ballot[0], $parcels)) {
-    			$parcels[$ballot[0]] = [
+    		$first_preference_candidate_id = $ballot[0];
+
+    		if (!array_key_exists($first_preference_candidate_id, $parcels)) {
+    			$parcels[$first_preference_candidate_id] = [
     				'transfer_value' => 1,
     				'ballots' => [],
     			];
     		}
 
-    		$parcels[$ballot[0]]['ballots'][] = $ballot;
+    		$parcels[$first_preference_candidate_id]['ballots'][] = $ballot;
     	}
 
-    	foreach ($parcels as $key => $parcel) {
-    		$this->candidates[$key]['parcels'][] = $parcel;
-    		$this->candidates[$key]['votes'] += count($parcel['ballots']) * $parcel['transfer_value'];
+    	foreach ($parcels as $candidate_id => $parcel) {
+    		$this->candidates[$candidate_id]['parcels'][] = $parcel;
+    		$this->candidates[$candidate_id]['votes'] += count($parcel['ballots']) * $parcel['transfer_value'];
 
-    		if ($this->candidates[$key]['votes'] >= $this->quota) {
-    			$this->candidates[$key]['elected'] = true;
+    		if ($this->candidates[$candidate_id]['votes'] >= $this->quota) {
+    			$this->candidates[$candidate_id]['elected'] = true;
 
-    			ray($this->candidates[$key]['name'].' elected on first preferences');
+    			ray($this->candidates[$candidate_id]['name'].' elected on first preferences');
     		}
     	}
 	}
@@ -94,12 +116,6 @@ class HareClarkElection {
 	{
 		foreach ($this->candidates as &$candidate) {
     		if ($candidate['surplus_transferred'] === false && $candidate['votes'] >= $this->quota) {
-
-    			if ($candidate['elected'] === false) {
-    				$candidate['elected'] = true;
-
-    				ray($candidate['name'].' elected');
-    			}
 
     			$candidate['surplus_transferred'] = true;
 
@@ -130,6 +146,11 @@ class HareClarkElection {
 					}
 		    	}
 
+		    	// Sort parcels in descending vote order
+		    	uasort($transfer_parcels, function ($a, $b) {
+		    		return (count($a['ballots']) * $a['transfer_value'] > count($b['ballots']) * $b['transfer_value']) ? -1 : 1;
+		    	});
+
 		    	foreach ($transfer_parcels as $key => $parcel) {
 		    		$this->candidates[$key]['parcels'][] = $parcel;
 		    		$this->candidates[$key]['votes'] += count($parcel['ballots']) * $parcel['transfer_value'];
@@ -142,36 +163,22 @@ class HareClarkElection {
 		    			$this->candidates[$key]['elected'] = true;
 
 		    			ray($candidate['name'].' elected at transfer');
+
+		    			// Exit early if all vacancies are filled
+		    			if (count($this->electedCandidates()) == $this->vacancies) {
+		    				return;
+		    			}
 		    		}
 		    	}
     		}
 	    }
 	}
 
-	protected function excludeCandidates()
+	protected function excludeCandidate()
 	{
-		$elected_candidates = count($this->electedCandidates());
-		$pending_transfers = count($this->pendingTransfers());
+		$excluded_candidate_id = array_key_last($this->continuingCandidates());
 
-    	if ($elected_candidates >= $this->vacancies || $pending_transfers > 0) {
-    		return;
-    	}
-
-    	$continuing_candidates = array_filter($this->candidates, function ($candidate) {
-    		return $candidate['elected'] === false && $candidate['excluded'] === false;
-    	});
-
-    	if (count($continuing_candidates) + $elected_candidates == $this->vacancies) {
-    		foreach ($continuing_candidates as $key => $candidate) {
-    			$this->candidates[$key]['elected'] = true;
-    		}
-
-    		return;
-    	}
-
-    	$excluded_candidate_id = array_key_last($continuing_candidates);
-
-    	ray("Excluding candidate {$this->candidates[$excluded_candidate_id]['name']}");
+		ray("Excluding candidate {$this->candidates[$excluded_candidate_id]['name']}");
 
     	$this->candidates[$excluded_candidate_id]['excluded'] = true;
 
@@ -179,7 +186,7 @@ class HareClarkElection {
 
     	// Sort parcels in highest transfer value order (descending order)
     	uasort($parcels, function ($a, $b) {
-    		return ($a['transfer_value'] > $a['transfer_value']) ? -1 : 1;
+    		return ($a['transfer_value'] > $b['transfer_value']) ? -1 : 1;
     	});
 
     	foreach ($parcels as $parcel) {
@@ -212,23 +219,36 @@ class HareClarkElection {
 	    		if ($this->candidates[$key]['votes'] >= $this->quota) {
 	    			$this->candidates[$key]['elected'] = true;
 
-	    			ray($candidate['name'].' elected at exclusion');
+	    			ray($this->candidates[$key]['name'].' elected at exclusion');
 	    		}
 	    	}
     	}
 	}
 
-	protected function pendingTransfers()
+	protected function candidatesWithPendingTransfers()
 	{
 		$pending_transfers = [];
 
     	foreach ($this->candidates as $key => $candidate) {
     		if ($candidate['surplus_transferred'] === false && $candidate['votes'] >= $this->quota) {
-    			$pending_transfers[] = &$this->candidates[$key];
+    			$pending_transfers[$key] = &$this->candidates[$key];
     		}
     	}
 
 		return $pending_transfers;
+	}
+
+	protected function continuingCandidates()
+	{
+		$continuing_candidates = [];
+
+    	foreach ($this->candidates as $key => $candidate) {
+    		if ($candidate['elected'] === false && $candidate['excluded'] === false) {
+    			$continuing_candidates[$key] = &$this->candidates[$key];
+    		}
+    	}
+
+		return $continuing_candidates;
 	}
 
 	protected function electedCandidates()
@@ -237,7 +257,7 @@ class HareClarkElection {
 
     	foreach ($this->candidates as $key => $candidate) {
     		if ($candidate['elected'] === true) {
-    			$elected_candidates[] = &$this->candidates[$key];
+    			$elected_candidates[$key] = &$this->candidates[$key];
     		}
     	}
 
